@@ -14,11 +14,13 @@ build:
 	@echo "Building $(BINARY_NAME)..."
 	@mkdir -p $(BUILD_DIR)
 	go build -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/sqllexer
+	go build -o $(BUILD_DIR)/$(BINARY_NAME)v2 ./cmd/sqlprocessor
 
 # Install the binary to GOPATH/bin
 install: build
 	@echo "Installing $(BINARY_NAME)..."
 	cp $(BUILD_DIR)/$(BINARY_NAME) $(shell go env GOPATH)/bin/
+	cp $(BUILD_DIR)/$(BINARY_NAME)v2 $(shell go env GOPATH)/bin/
 
 # Run tests
 test:
