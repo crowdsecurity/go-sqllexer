@@ -28,12 +28,13 @@ type record struct {
 }
 
 func main() {
-	format := flag.String("format", "json", "Output format: json or txt")
+	format := flag.String("format", "json", "Output format: json, jsonl or txt")
 	input := flag.String("input", "", "Input file (optional; can also pass files as args)")
 	query := flag.String("query", "", "SQL query string input (optional)")
 	output := flag.String("output", "", "Output file (optional; default stdout for query/stdin)")
 	outDir := flag.String("outdir", "", "Output directory (default: same as input file)")
 	includeEmpty := flag.Bool("include-empty", false, "Include empty/whitespace-only lines")
+	mode := flag.String("mode", "analyze", "Processing mode: analyze or tokenize")
 	flag.Parse()
 
 	inputs := make([]string, 0, 1+len(flag.Args()))
@@ -44,6 +45,11 @@ func main() {
 
 	if *format != "json" && *format != "txt" && *format != "jsonl" {
 		fmt.Fprintf(os.Stderr, "Invalid -format %q (expected json, jsonl, or txt)\n", *format)
+		os.Exit(2)
+	}
+
+	if *mode != "analyze" && *mode != "tokenize" {
+		fmt.Fprintf(os.Stderr, "Invalid -mode %q (expected analyze or tokenize)\n", *mode)
 		os.Exit(2)
 	}
 
@@ -71,7 +77,7 @@ func main() {
 
 	exitCode := 0
 	if *query != "" {
-		if err := processReaderToPath(strings.NewReader(*query), *format, *output, *includeEmpty); err != nil {
+		if err := processReaderToPath(strings.NewReader(*query), *format, *output, *includeEmpty, *mode); err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing query: %v\n", err)
 			exitCode = 1
 		}
@@ -79,7 +85,7 @@ func main() {
 	}
 
 	if len(inputs) == 0 {
-		if err := processReaderToPath(os.Stdin, *format, *output, *includeEmpty); err != nil {
+		if err := processReaderToPath(os.Stdin, *format, *output, *includeEmpty, *mode); err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing stdin: %v\n", err)
 			exitCode = 1
 		}
@@ -87,7 +93,7 @@ func main() {
 	}
 
 	for _, path := range inputs {
-		if err := processFile(path, *format, *outDir, *output, *includeEmpty); err != nil {
+		if err := processFile(path, *format, *outDir, *output, *includeEmpty, *mode); err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing %s: %v\n", path, err)
 			exitCode = 1
 		}
@@ -96,7 +102,7 @@ func main() {
 	os.Exit(exitCode)
 }
 
-func processFile(path, format, outDir, output string, includeEmpty bool) error {
+func processFile(path, format, outDir, output string, includeEmpty bool, mode string) error {
 	inFile, err := os.Open(path)
 	if err != nil {
 		return err
@@ -124,7 +130,7 @@ func processFile(path, format, outDir, output string, includeEmpty bool) error {
 		out = outFile
 	}
 
-	return processReader(inFile, format, out, includeEmpty)
+	return processReader(inFile, format, out, includeEmpty, mode)
 }
 
 func outputPath(inputPath, outDir, format string) (string, error) {
@@ -146,19 +152,19 @@ func outputPath(inputPath, outDir, format string) (string, error) {
 	return filepath.Join(outDir, filename), nil
 }
 
-func processReaderToPath(r io.Reader, format, output string, includeEmpty bool) error {
+func processReaderToPath(r io.Reader, format, output string, includeEmpty bool, mode string) error {
 	if output == "" {
-		return processReader(r, format, os.Stdout, includeEmpty)
+		return processReader(r, format, os.Stdout, includeEmpty, mode)
 	}
 	outFile, err := os.Create(output)
 	if err != nil {
 		return err
 	}
 	defer outFile.Close()
-	return processReader(r, format, outFile, includeEmpty)
+	return processReader(r, format, outFile, includeEmpty, mode)
 }
 
-func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool) error {
+func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool, mode string) error {
 	reader := bufio.NewReader(r)
 	lineNum := 0
 
@@ -181,7 +187,12 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool)
 				continue
 			}
 
-			rec := tokenizeLine(line, lineNum)
+			var v any
+			if mode == "tokenize" {
+				v = tokenizeLineTypesOnly(line)
+			} else {
+				v = tokenizeLine(line, lineNum)
+			}
 			if !first {
 				if _, err := out.Write([]byte(",\n")); err != nil {
 					return err
@@ -189,7 +200,7 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool)
 			}
 			first = false
 
-			blob, err := json.Marshal(rec)
+			blob, err := json.Marshal(v)
 			if err != nil {
 				return err
 			}
@@ -215,8 +226,13 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool)
 				continue
 			}
 
-			rec := tokenizeLine(line, lineNum)
-			blob, err := json.Marshal(rec)
+			var v any
+			if mode == "tokenize" {
+				v = tokenizeLineTypesOnly(line)
+			} else {
+				v = tokenizeLine(line, lineNum)
+			}
+			blob, err := json.Marshal(v)
 			if err != nil {
 				return err
 			}
@@ -243,9 +259,15 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool)
 				continue
 			}
 
-			rec := tokenizeLine(line, lineNum)
-			if err := writeTxtRecord(writer, rec); err != nil {
-				return err
+			if mode == "tokenize" {
+				if _, err := fmt.Fprintln(writer, tokenizeLineTypesOnly(line)); err != nil {
+					return err
+				}
+			} else {
+				rec := tokenizeLine(line, lineNum)
+				if err := writeTxtRecord(writer, rec); err != nil {
+					return err
+				}
 			}
 		}
 		if err := writer.Flush(); err != nil {
@@ -256,6 +278,19 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool)
 	}
 
 	return nil
+}
+
+func tokenizeLineTypesOnly(line string) string {
+	lexer := sqllexer.New(line)
+	var types []string
+	for {
+		tok := lexer.Scan()
+		if tok.Type == sqllexer.EOF {
+			break
+		}
+		types = append(types, tokenTypeName(tok.Type))
+	}
+	return strings.Join(types, " ")
 }
 
 func tokenizeLine(line string, lineNum int) record {
