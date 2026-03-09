@@ -132,8 +132,11 @@ func outputPath(inputPath, outDir, format string) (string, error) {
 	base = strings.TrimSuffix(base, filepath.Ext(base))
 
 	suffix := ".tokens.json"
-	if format == "txt" {
+	switch format {
+	case "txt":
 		suffix = ".tokens.txt"
+	case "jsonl":
+		suffix = ".tokens.jsonl"
 	}
 	filename := base + suffix
 
@@ -195,6 +198,34 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool)
 			}
 		}
 		if _, err := out.Write([]byte("\n]\n")); err != nil {
+			return err
+		}
+	case "jsonl":
+		writer := bufio.NewWriter(out)
+		for {
+			line, err := readLine(reader)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
+				return err
+			}
+			lineNum++
+			if !includeEmpty && strings.TrimSpace(line) == "" {
+				continue
+			}
+
+			rec := tokenizeLine(line, lineNum)
+			blob, err := json.Marshal(rec)
+			if err != nil {
+				return err
+			}
+			blob = append(blob, '\n')
+			if _, err := writer.Write(blob); err != nil {
+				return err
+			}
+		}
+		if err := writer.Flush(); err != nil {
 			return err
 		}
 	case "txt":
