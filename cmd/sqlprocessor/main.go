@@ -419,5 +419,7 @@ func readLine(reader *bufio.Reader) (string, error) {
 	line := string(buf)
 	line = strings.TrimSuffix(line, "\n")
 	line = strings.TrimSuffix(line, "\r")
+	line = strings.ReplaceAll(line, "'", "")
+	line = strings.ReplaceAll(line, "\"", "")
 	return line, nil
 }
