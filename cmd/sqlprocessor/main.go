@@ -288,10 +288,6 @@ func tokenizeLineTypesOnly(line string) string {
 		if tok.Type == sqllexer.EOF {
 			break
 		}
-		// SPACE don't bring information
-		if tok.Type == sqllexer.SPACE {
-			continue
-		}
 		types = append(types, tokenTypeName(tok.Type))
 	}
 	return strings.Join(types, " ")
@@ -309,10 +305,6 @@ func tokenizeLine(line string, lineNum int) record {
 		}
 		if tok.Type == sqllexer.ERROR {
 			hasError = true
-		}
-		// SPACE don't bring information
-		if tok.Type == sqllexer.SPACE {
-			continue
 		}
 		tokens = append(tokens, tokenOut{
 			Type:  tokenTypeName(tok.Type),
