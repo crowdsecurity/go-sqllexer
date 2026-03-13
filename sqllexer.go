@@ -352,7 +352,7 @@ func (s *Lexer) scanIdentifier(ch rune) *Token {
 
 	// If first character is Unicode, skip trie lookup
 	if ch > 127 {
-		for isIdentifier(ch) {
+		for isIdentifier(ch, s.lookAhead(1)) {
 			s.hasDigits = s.hasDigits || isDigit(ch)
 			ch = s.nextBy(utf8.RuneLen(ch))
 		}
@@ -402,7 +402,7 @@ func (s *Lexer) scanIdentifier(ch rune) *Token {
 	}
 
 	// Continue scanning identifier if no keyword match
-	for isIdentifier(ch) {
+	for isIdentifier(ch, s.lookAhead(1)) {
 		s.hasDigits = s.hasDigits || isDigit(ch)
 		ch = s.nextBy(utf8.RuneLen(ch))
 	}
