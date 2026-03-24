@@ -77,7 +77,8 @@ func main() {
 
 	exitCode := 0
 	if *query != "" {
-		if err := processReaderToPath(strings.NewReader(*query), *format, *output, *includeEmpty, *mode); err != nil {
+		encoded, _ := json.Marshal(*query)
+		if err := processReaderToPath(strings.NewReader(string(encoded)+"\n"), *format, *output, *includeEmpty, *mode); err != nil {
 			fmt.Fprintf(os.Stderr, "Error processing query: %v\n", err)
 			exitCode = 1
 		}
@@ -416,10 +417,14 @@ func readLine(reader *bufio.Reader) (string, error) {
 		return "", err
 	}
 
-	line := string(buf)
-	line = strings.TrimSuffix(line, "\n")
-	line = strings.TrimSuffix(line, "\r")
-	line = strings.ReplaceAll(line, "'", "")
-	line = strings.ReplaceAll(line, "\"", "")
-	return line, nil
+	line := strings.TrimSpace(string(buf))
+	if line == "" {
+		return "", nil
+	}
+
+	var s string
+	if err := json.Unmarshal([]byte(line), &s); err != nil {
+		return "", fmt.Errorf("invalid JSONL input %q: %w", line, err)
+	}
+	return s, nil
 }
