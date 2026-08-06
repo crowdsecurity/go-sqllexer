@@ -306,11 +306,11 @@ multiline comment */
 			input:    "SELECT d.id, d.uuid, d.org_id, d.creator_id, d.updater_id, d.monitor_id, d.parent_id, d.original_parent_id, d.scope, d.start_dt, d.end_dt, d.canceled_dt, d.active, d.disabled, d.created, d.modified, d.message, d.monitor_tags, d.recurrence, d.mute_first_recovery_notification, d.scope_v2_query, d.scope_v2 FROM monitor_downtime d, org o WHERE o.id = d.org_id AND d.modified >= ? AND o.partition_num = ANY (?, ?, ?)",
 			expected: "SELECT d.id, d.uuid, d.org_id, d.creator_id, d.updater_id, d.monitor_id, d.parent_id, d.original_parent_id, d.scope, d.start_dt, d.end_dt, d.canceled_dt, d.active, d.disabled, d.created, d.modified, d.message, d.monitor_tags, d.recurrence, d.mute_first_recovery_notification, d.scope_v2_query, d.scope_v2 FROM monitor_downtime d, org o WHERE o.id = d.org_id AND d.modified >= ? AND o.partition_num = ANY ( ? )",
 			statementMetadata: StatementMetadata{
-				Tables:     []string{"monitor_downtime"},
+				Tables:     []string{"monitor_downtime", "org"},
 				Comments:   []string{},
 				Commands:   []string{"SELECT"},
 				Procedures: []string{},
-				Size:       22,
+				Size:       25,
 			},
 		},
 		{
@@ -401,6 +401,17 @@ multiline comment */
 				Commands:   []string{"SELECT"},
 				Procedures: []string{},
 				Size:       7,
+			},
+		},
+		{
+			input:    "VACUUM ANALYZE my_table",
+			expected: "VACUUM ANALYZE my_table",
+			statementMetadata: StatementMetadata{
+				Tables:     []string{},
+				Comments:   []string{},
+				Commands:   []string{"VACUUM"},
+				Procedures: []string{},
+				Size:       6,
 			},
 		},
 	}
@@ -522,6 +533,15 @@ func TestNormalizerFormatting(t *testing.T) {
 				"select * from discount where description like ?",
 			},
 			expected:          "SELECT * FROM discount WHERE description LIKE ?",
+			uppercaseKeywords: true,
+		},
+		{
+			queries: []string{
+				"vacuum analyze my_table",
+				"VACUUM ANALYZE my_table",
+				"Vacuum Analyze my_table",
+			},
+			expected:          "VACUUM ANALYZE my_table",
 			uppercaseKeywords: true,
 		},
 	}
@@ -1016,6 +1036,85 @@ func TestNormalizeDeobfuscatedSQL(t *testing.T) {
 				CollectTables:           true,
 				KeepSQLAlias:            true,
 				KeepIdentifierQuotation: true,
+			},
+			lexerOptions: []lexerOption{
+				WithDBMS(DBMSSQLServer),
+			},
+		},
+		{
+			// simple bracket-quoted column after dot — no space, brackets stripped, metadata on
+			input:    `SELECT t.[SimpleCol] FROM dbo.SomeTable AS t`,
+			expected: `SELECT t.SimpleCol FROM dbo.SomeTable AS t`,
+			statementMetadata: StatementMetadata{
+				Tables:     []string{`dbo.SomeTable`},
+				Comments:   []string{},
+				Commands:   []string{"SELECT"},
+				Procedures: []string{},
+				Size:       19,
+			},
+			normalizationConfig: &normalizerConfig{
+				CollectComments: true,
+				CollectCommands: true,
+				CollectTables:   true,
+				KeepSQLAlias:    true,
+			},
+			lexerOptions: []lexerOption{
+				WithDBMS(DBMSSQLServer),
+			},
+		},
+		{
+			// same as above with all metadata collection disabled — output must be identical
+			input:    `SELECT t.[SimpleCol] FROM dbo.SomeTable AS t`,
+			expected: `SELECT t.SimpleCol FROM dbo.SomeTable AS t`,
+			statementMetadata: StatementMetadata{
+				Tables:     []string{},
+				Comments:   []string{},
+				Commands:   []string{},
+				Procedures: []string{},
+				Size:       0,
+			},
+			normalizationConfig: &normalizerConfig{
+				KeepSQLAlias: true,
+			},
+			lexerOptions: []lexerOption{
+				WithDBMS(DBMSSQLServer),
+			},
+		},
+		{
+			input:    `SELECT t.[Column With Spaces] FROM dbo.SomeTable AS t`,
+			expected: `SELECT t.[Column With Spaces] FROM dbo.SomeTable AS t`,
+			statementMetadata: StatementMetadata{
+				Tables:     []string{`dbo.SomeTable`},
+				Comments:   []string{},
+				Commands:   []string{"SELECT"},
+				Procedures: []string{},
+				Size:       19,
+			},
+			normalizationConfig: &normalizerConfig{
+				CollectComments: true,
+				CollectCommands: true,
+				CollectTables:   true,
+				KeepSQLAlias:    true,
+			},
+			lexerOptions: []lexerOption{
+				WithDBMS(DBMSSQLServer),
+			},
+		},
+		{
+			input:    `SELECT [First Name], [Last Name] FROM [My Table]`,
+			expected: `SELECT [First Name], [Last Name] FROM [My Table]`,
+			statementMetadata: StatementMetadata{
+				Tables:     []string{`My Table`},
+				Comments:   []string{},
+				Commands:   []string{"SELECT"},
+				Procedures: []string{},
+				Size:       14,
+			},
+			normalizationConfig: &normalizerConfig{
+				CollectComments: true,
+				CollectCommands: true,
+				CollectTables:   true,
+				KeepSQLAlias:    true,
 			},
 			lexerOptions: []lexerOption{
 				WithDBMS(DBMSSQLServer),

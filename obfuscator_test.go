@@ -46,6 +46,31 @@ func TestObfuscator(t *testing.T) {
 			replaceDigits: false,
 		},
 		{
+			// SQL Server does not treat backslash as a string escape, so
+			// ESCAPE N'\' is a complete literal (a single backslash).
+			input:    `DECLARE @p1 NVARCHAR(50)=N'%foo%', @p2 NVARCHAR(50)=N'%bar%'; SELECT col FROM tbl WHERE col LIKE @p1 ESCAPE N'\' AND col LIKE @p2 ESCAPE N'\';`,
+			expected: `DECLARE @p1 NVARCHAR(?)=N?, @p2 NVARCHAR(?)=N?; SELECT col FROM tbl WHERE col LIKE @p1 ESCAPE N? AND col LIKE @p2 ESCAPE N?;`,
+			dbms:     DBMSSQLServer,
+		},
+		{
+			// Oracle does not treat backslash as a string escape either.
+			input:    `SELECT col FROM tbl WHERE col LIKE '%foo\_%' ESCAPE '\' AND col LIKE '%bar\_%' ESCAPE '\' AND flag = 'x'`,
+			expected: `SELECT col FROM tbl WHERE col LIKE ? ESCAPE ? AND col LIKE ? ESCAPE ? AND flag = ?`,
+			dbms:     DBMSOracle,
+		},
+		{
+			// MySQL genuinely uses backslash as a string escape
+			input:    `SELECT col FROM tbl WHERE col LIKE '%foo%' ESCAPE '\' AND flag = 1`,
+			expected: `SELECT col FROM tbl WHERE col LIKE ? ESCAPE ?`,
+			dbms:     DBMSMySQL,
+		},
+		{
+			// Snowflake also supports backslash escape sequences
+			input:    `SELECT col FROM tbl WHERE col LIKE '%foo%' ESCAPE '\' AND flag = 1`,
+			expected: `SELECT col FROM tbl WHERE col LIKE ? ESCAPE ?`,
+			dbms:     DBMSSnowflake,
+		},
+		{
 			input:         "SELECT * FROM \"users table\" where id = 1",
 			expected:      "SELECT * FROM \"users table\" where id = ?",
 			replaceDigits: true,
@@ -550,6 +575,34 @@ func TestObfuscator(t *testing.T) {
 			input:                `SELECT * FROM users where id = @_My_id`,
 			expected:             `SELECT * FROM users where id = ?`,
 			replaceBindParameter: true,
+		},
+		{
+			// pg_stat_activity captures the raw SQL with `epoch` as an unquoted
+			// identifier. Obfuscate it so the signature converges with the
+			// pg_stat_statements form `EXTRACT($1 FROM ...)`.
+			input:    `SELECT EXTRACT(epoch FROM created_at) FROM events`,
+			expected: `SELECT EXTRACT(? FROM created_at) FROM events`,
+		},
+		{
+			input:    `SELECT EXTRACT(YEAR FROM a), EXTRACT(MoNtH FROM b) FROM t`,
+			expected: `SELECT EXTRACT(? FROM a), EXTRACT(? FROM b) FROM t`,
+		},
+		{
+			input:                      `SELECT EXTRACT($1 FROM created_at) FROM events`,
+			expected:                   `SELECT EXTRACT(? FROM created_at) FROM events`,
+			replacePositionalParameter: true,
+		},
+		{
+			// `epoch` outside an EXTRACT(...) call is just an identifier and
+			// must not be replaced.
+			input:    `SELECT epoch FROM events WHERE epoch > 0`,
+			expected: `SELECT epoch FROM events WHERE epoch > ?`,
+		},
+		{
+			// Unknown EXTRACT field (not in the recognized set) is left alone
+			// so we don't accidentally rewrite user identifiers.
+			input:    `SELECT EXTRACT(custom_field FROM created_at) FROM events`,
+			expected: `SELECT EXTRACT(custom_field FROM created_at) FROM events`,
 		},
 	}
 
