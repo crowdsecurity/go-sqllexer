@@ -27,6 +27,15 @@ type record struct {
 	HasError bool       `json:"has_error,omitempty"`
 }
 
+// encoded is the lean wire shape for -mode encode: the joined token type names
+// plus the input line number the consumer needs to correlate its own payload.
+// The counter burns a number for skipped blank input, so output lines are a
+// subsequence of input positions, not a 1:1 mapping.
+type encoded struct {
+	Line int    `json:"line"`
+	Text string `json:"text"`
+}
+
 func main() {
 	format := flag.String("format", "json", "Output format: json, jsonl or txt")
 	input := flag.String("input", "", "Input file (optional; can also pass files as args)")
@@ -34,7 +43,7 @@ func main() {
 	output := flag.String("output", "", "Output file (optional; default stdout for query/stdin)")
 	outDir := flag.String("outdir", "", "Output directory (default: same as input file)")
 	includeEmpty := flag.Bool("include-empty", false, "Include empty/whitespace-only lines")
-	mode := flag.String("mode", "analyze", "Processing mode: analyze or tokenize")
+	mode := flag.String("mode", "analyze", "Processing mode: analyze, tokenize or encode")
 	flag.Parse()
 
 	inputs := make([]string, 0, 1+len(flag.Args()))
@@ -48,8 +57,10 @@ func main() {
 		os.Exit(2)
 	}
 
-	if *mode != "analyze" && *mode != "tokenize" {
-		fmt.Fprintf(os.Stderr, "Invalid -mode %q (expected analyze or tokenize)\n", *mode)
+	switch *mode {
+	case "analyze", "tokenize", "encode":
+	default:
+		fmt.Fprintf(os.Stderr, "Invalid -mode %q (expected analyze, tokenize or encode)\n", *mode)
 		os.Exit(2)
 	}
 
@@ -188,12 +199,7 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 				continue
 			}
 
-			var v any
-			if mode == "tokenize" {
-				v = tokenizeLineTypesOnly(line)
-			} else {
-				v = tokenizeLine(line, lineNum)
-			}
+			v := encodeValue(mode, line, lineNum)
 			if !first {
 				if _, err := out.Write([]byte(",\n")); err != nil {
 					return err
@@ -227,12 +233,7 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 				continue
 			}
 
-			var v any
-			if mode == "tokenize" {
-				v = tokenizeLineTypesOnly(line)
-			} else {
-				v = tokenizeLine(line, lineNum)
-			}
+			v := encodeValue(mode, line, lineNum)
 			blob, err := json.Marshal(v)
 			if err != nil {
 				return err
@@ -264,6 +265,10 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 				if _, err := fmt.Fprintln(writer, tokenizeLineTypesOnly(line)); err != nil {
 					return err
 				}
+			} else if mode == "encode" {
+				if _, err := fmt.Fprintf(writer, "%d\t%s\n", lineNum, tokenizeLineTypesOnly(line)); err != nil {
+					return err
+				}
 			} else {
 				rec := tokenizeLine(line, lineNum)
 				if err := writeTxtRecord(writer, rec); err != nil {
@@ -279,6 +284,20 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 	}
 
 	return nil
+}
+
+// encodeValue picks the value a mode serialises. Every mode belongs here: a
+// missing case falls through to the analyze record and ships the wrong shape
+// without erroring.
+func encodeValue(mode, line string, lineNum int) any {
+	switch mode {
+	case "tokenize":
+		return tokenizeLineTypesOnly(line)
+	case "encode":
+		return encoded{Line: lineNum, Text: tokenizeLineTypesOnly(line)}
+	default:
+		return tokenizeLine(line, lineNum)
+	}
 }
 
 func tokenizeLineTypesOnly(line string) string {
