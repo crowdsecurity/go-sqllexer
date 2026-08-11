@@ -445,5 +445,15 @@ func readLine(reader *bufio.Reader) (string, error) {
 	if err := json.Unmarshal([]byte(line), &s); err != nil {
 		return "", fmt.Errorf("invalid JSONL input %q: %w", line, err)
 	}
+
+	// Quotes are stripped before lexing because SQLi payloads are full of
+	// unbalanced ones, and a single dangling quote makes the lexer swallow the
+	// whole remainder of the query into one INCOMPLETE_STRING or ERROR token --
+	// collapsing exactly the structure the model needs to see. Callers that run
+	// inference must apply the same strip or their features will not match.
+	s = strings.TrimSuffix(s, "\n")
+	s = strings.TrimSuffix(s, "\r")
+	s = strings.ReplaceAll(s, "'", "")
+	s = strings.ReplaceAll(s, "\"", "")
 	return s, nil
 }
