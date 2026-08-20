@@ -1114,6 +1114,19 @@ here */`,
 			},
 		},
 		{
+			name:  "simple select with multiline comments as separators",
+			input: `SELECT/**/foo/**/FROM/**/test`,
+			expected: []TokenSpec{
+				{COMMAND, "SELECT"},
+				{MULTILINE_COMMENT, "/**/"},
+				{IDENT, "foo"},
+				{MULTILINE_COMMENT, "/**/"},
+				{KEYWORD, "FROM"},
+				{MULTILINE_COMMENT, "/**/"},
+				{IDENT, "test"},
+			},
+		},
+		{
 			name:  "VACUUM should be classified as COMMAND",
 			input: "VACUUM ANALYZE my_table",
 			expected: []TokenSpec{
