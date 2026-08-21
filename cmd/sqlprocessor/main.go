@@ -58,7 +58,7 @@ func main() {
 	}
 
 	switch *mode {
-	case "analyze", "tokenize", "encode":
+	case "analyze", "tokenize", "encode", "encode-marked":
 	default:
 		fmt.Fprintf(os.Stderr, "Invalid -mode %q (expected analyze, tokenize or encode)\n", *mode)
 		os.Exit(2)
@@ -187,7 +187,7 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 		}
 		first := true
 		for {
-			line, err := readLine(reader)
+			line, err := readLine(reader, mode != "encode-marked")
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
@@ -221,7 +221,7 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 	case "jsonl":
 		writer := bufio.NewWriter(out)
 		for {
-			line, err := readLine(reader)
+			line, err := readLine(reader, mode != "encode-marked")
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
@@ -249,7 +249,7 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 	case "txt":
 		writer := bufio.NewWriter(out)
 		for {
-			line, err := readLine(reader)
+			line, err := readLine(reader, mode != "encode-marked")
 			if err != nil {
 				if errors.Is(err, io.EOF) {
 					break
@@ -267,6 +267,10 @@ func processReader(r io.Reader, format string, out io.Writer, includeEmpty bool,
 				}
 			} else if mode == "encode" {
 				if _, err := fmt.Fprintf(writer, "%d\t%s\n", lineNum, tokenizeLineTypesOnly(line)); err != nil {
+					return err
+				}
+			} else if mode == "encode-marked" {
+				if _, err := fmt.Fprintf(writer, "%d\t%s\n", lineNum, tokenizeLineTypesOnlyMarked(line)); err != nil {
 					return err
 				}
 			} else {
@@ -295,6 +299,8 @@ func encodeValue(mode, line string, lineNum int) any {
 		return tokenizeLineTypesOnly(line)
 	case "encode":
 		return encoded{Line: lineNum, Text: tokenizeLineTypesOnly(line)}
+	case "encode-marked":
+		return encoded{Line: lineNum, Text: tokenizeLineTypesOnlyMarked(line)}
 	default:
 		return tokenizeLine(line, lineNum)
 	}
@@ -311,6 +317,59 @@ func tokenizeLineTypesOnly(line string) string {
 		types = append(types, tokenTypeName(tok.Type))
 	}
 	return strings.Join(types, " ")
+}
+
+// tokenizeLineTypesOnlyMarked is tokenizeLineTypesOnly with quote positions
+// preserved as a QUOTE token.
+//
+// Deleting quotes stops a dangling one swallowing the input, but it also erases
+// the most common injection shape there is. After the strip,
+//
+//	"anything' OR 'x'='x"  and  "anything or x=x"
+//
+// are the same token sequence, so nothing downstream can tell an attack from an
+// ordinary phrase. Here the line is split *at* each quote, each segment lexed
+// separately, and a QUOTE emitted between them:
+//
+//	IDENT QUOTE SPACE KEYWORD SPACE QUOTE IDENT QUOTE OPERATOR QUOTE IDENT
+//
+// A quote still never reaches the lexer, so the swallowing problem stays fixed.
+// This is a different feature encoding, not a refinement of the other one: a
+// quote becomes a lexical boundary, so `12'34` is NUMBER QUOTE NUMBER here and a
+// single NUMBER under the strip. A model trained on one cannot score the other.
+//
+// Callers must read this line with readLine(reader, false); with the quotes
+// already deleted it degrades to tokenizeLineTypesOnly.
+func tokenizeLineTypesOnlyMarked(line string) string {
+	var types []string
+	start := 0
+	for i := 0; i < len(line); i++ {
+		if c := line[i]; c == '\'' || c == '"' {
+			types = appendSegmentTypes(types, line[start:i])
+			types = append(types, quoteTokenName)
+			start = i + 1
+		}
+	}
+	types = appendSegmentTypes(types, line[start:])
+	return strings.Join(types, " ")
+}
+
+// quoteTokenName is not a go-sqllexer type; the encoding inserts it. Upper case
+// and space-free like every other name, so it survives a whitespace split.
+const quoteTokenName = "QUOTE"
+
+func appendSegmentTypes(dst []string, segment string) []string {
+	if segment == "" {
+		return dst
+	}
+	lexer := sqllexer.New(segment)
+	for {
+		tok := lexer.Scan()
+		if tok == nil || tok.Type == sqllexer.EOF {
+			return dst
+		}
+		dst = append(dst, tokenTypeName(tok.Type))
+	}
 }
 
 func tokenizeLine(line string, lineNum int) record {
@@ -416,7 +475,11 @@ func tokenTypeName(t sqllexer.TokenType) string {
 	}
 }
 
-func readLine(reader *bufio.Reader) (string, error) {
+// readLine reads one JSONL record. stripQuotes selects the feature encoding's
+// preprocessing: true deletes quotes before lexing (the "encode" contract),
+// false keeps them for a caller that marks their positions itself
+// ("encode-marked"). See tokenizeLineTypesOnlyMarked for why that matters.
+func readLine(reader *bufio.Reader, stripQuotes bool) (string, error) {
 	var buf []byte
 	for {
 		chunk, err := reader.ReadSlice('\n')
@@ -453,6 +516,9 @@ func readLine(reader *bufio.Reader) (string, error) {
 	// inference must apply the same strip or their features will not match.
 	s = strings.TrimSuffix(s, "\n")
 	s = strings.TrimSuffix(s, "\r")
+	if !stripQuotes {
+		return s, nil
+	}
 	s = strings.ReplaceAll(s, "'", "")
 	s = strings.ReplaceAll(s, "\"", "")
 	return s, nil
