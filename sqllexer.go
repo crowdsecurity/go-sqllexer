@@ -183,13 +183,27 @@ func (s *Lexer) Scan() *Token {
 		}
 		return s.scanUnknown() // backtick is only valid in mysql
 	case ch == '#':
+		// SQL Server names temporary tables #temp, so there a # opens an
+		// identifier. It is the only dialect that does, and saying so is the
+		// caller's job.
 		if s.config.DBMS == DBMSSQLServer {
 			return s.scanIdentifier(ch)
-		} else if s.config.DBMS == DBMSMySQL {
-			// MySQL treats # as a comment
-			return s.scanSingleLineComment(ch)
 		}
-		return s.scanOperator(ch)
+		// PostgreSQL spells three JSON path operators #> #>> #-, but only
+		// PostgreSQL does, so recognising them requires being told. Guessing
+		// from the two characters alone is what a bypass is made of: MySQL
+		// reads `admin'#-` as a comment to end of line and logs you in.
+		if s.config.DBMS == DBMSPostgres && (s.lookAhead(1) == '>' || s.lookAhead(1) == '-') {
+			return s.scanOperator(ch)
+		}
+		// Everything else: a comment to end of line. MySQL says so outright,
+		// and a caller that has not named its dialect gets the same reading,
+		// because the alternative is worse for the one that cannot afford to
+		// guess. A WAF scanning untrusted input has no idea what is behind it;
+		// scanning `admin'#` as an identifier and an operator hides a login
+		// bypass that MySQL would execute, while scanning a stray # in some
+		// other dialect as a comment costs a token.
+		return s.scanSingleLineComment(ch)
 	case ch == '@':
 		if s.lookAhead(1) == '@' {
 			if isAlphaNumeric(s.lookAhead(2)) {

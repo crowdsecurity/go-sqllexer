@@ -321,11 +321,13 @@ func TestObfuscator(t *testing.T) {
 			// postgres #> operator
 			input:    `SELECT * FROM users where '{"a": 1, "b": 2}'::jsonb #> '{a}'`,
 			expected: `SELECT * FROM users where ?::jsonb #> ?`,
+			dbms:     DBMSPostgres,
 		},
 		{
 			// postgres #>> operator
 			input:    `SELECT * FROM users where '{"a": 1, "b": 2}'::jsonb #>> '{a}'`,
 			expected: `SELECT * FROM users where ?::jsonb #>> ?`,
+			dbms:     DBMSPostgres,
 		},
 		{
 			// postgres ? operator

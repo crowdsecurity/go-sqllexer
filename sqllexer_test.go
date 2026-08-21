@@ -894,6 +894,7 @@ here */`,
 				{SPACE, " "},
 				{IDENT, "users"},
 			},
+			lexerOpts: []lexerOption{WithDBMS(DBMSPostgres)},
 		},
 		{
 			name:  "extracts JSON sub-object at the specified path as text",
@@ -913,6 +914,7 @@ here */`,
 				{SPACE, " "},
 				{IDENT, "users"},
 			},
+			lexerOpts: []lexerOption{WithDBMS(DBMSPostgres)},
 		},
 		{
 			name:  "JSON path return any item for the specified JSON value",
@@ -1147,6 +1149,58 @@ here */`,
 				{KEYWORD, "analyze"},
 				{SPACE, " "},
 				{IDENT, "my_table"},
+			},
+		},
+		{
+			name:  "WAITFOR DELAY is a keyword pair, not two identifiers",
+			input: "1 WAITFOR DELAY '0:0:5'",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{KEYWORD, "WAITFOR"},
+				{SPACE, " "},
+				{KEYWORD, "DELAY"},
+				{SPACE, " "},
+				{STRING, "'0:0:5'"},
+			},
+		},
+		{
+			name:  "# opens a comment without being told the dialect",
+			input: "1 or 1=1#",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{KEYWORD, "or"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+				{OPERATOR, "="},
+				{NUMBER, "1"},
+				{COMMENT, "#"},
+			},
+		},
+		{
+			// #> is a JSON path operator only in PostgreSQL. Undeclared, the
+			// MySQL reading wins: everything after the # is commented out.
+			// Guessing from the two characters would leave `admin'#-` scanning
+			// as an operator while MySQL executes it as a login bypass.
+			name:  "an undeclared #> is a comment, not a JSON operator",
+			input: "data #> '{a}'",
+			expected: []TokenSpec{
+				{IDENT, "data"},
+				{SPACE, " "},
+				{COMMENT, "#> '{a}'"},
+			},
+		},
+		{
+			name:      "a declared PostgreSQL #- stays a JSON operator",
+			input:     "data #- '{a}'",
+			lexerOpts: []lexerOption{WithDBMS(DBMSPostgres)},
+			expected: []TokenSpec{
+				{IDENT, "data"},
+				{SPACE, " "},
+				{JSON_OP, "#-"},
+				{SPACE, " "},
+				{STRING, "'{a}'"},
 			},
 		},
 		{
