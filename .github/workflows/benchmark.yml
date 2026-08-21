@@ -2,30 +2,38 @@ name: Run benchmarks
 permissions:
   contents: read
  
+# Opt-in only. Upstream ran this on an 8-core ARM machine on every push; on a
+# shared 2-core runner the same job takes ~47 minutes, and the numbers it
+# produces are not worth that. Comparing the base branch against *itself* on a
+# GitHub-hosted runner swings -4.9% to +5.3% run to run, which is wider than
+# most changes worth detecting -- so an automatic delta here would mostly
+# report noise, at 47 minutes a PR.
+#
+# Run it deliberately from the Actions tab when a change is expected to move
+# performance, and confirm anything that matters on a quiet machine.
 on:
-  push:
-    branches: 
-    - "*"
-  pull_request:
-    types: [opened, reopened, synchronize]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Dispatched from a branch: benchmark it against main.
   benchmark:
     if: github.ref != 'refs/heads/main'
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-8core-linux
+    # Upstream runs this on DataDog's self-hosted ARM pool, which does not
+    # exist in this fork -- jobs targeting it queue forever. GitHub-hosted
+    # runners are shared and noisy, so treat a benchstat delta here as a hint
+    # and confirm anything that matters on a quiet machine.
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         go-version: [ '1.25.7' ]
 
     steps:
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
         with:
           go-version: ${{ matrix.go-version }}
       - name: Display Go version
@@ -84,17 +92,20 @@ jobs:
           path: bench
 
 
+  # Dispatched from main: refresh the cached baseline the job above compares to.
   benchmark_main:
     if: github.ref == 'refs/heads/main'
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-8core-linux
+    # Upstream runs this on DataDog's self-hosted ARM pool, which does not
+    # exist in this fork -- jobs targeting it queue forever. GitHub-hosted
+    # runners are shared and noisy, so treat a benchstat delta here as a hint
+    # and confirm anything that matters on a quiet machine.
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         go-version: [ '1.25.7' ]
     steps:
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
         with:
           go-version: ${{ matrix.go-version }}
       - name: Display Go version
