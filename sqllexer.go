@@ -428,7 +428,8 @@ func (s *Lexer) scanIdentifier(ch rune) *Token {
 	}
 
 	// If we found a complete keyword and next char is whitespace
-	if node.isEnd && (isPunctuation(ch) || isSpace(ch) || isMultiLineComment(ch, s.lookAhead(1)) || isEOF(ch)) {
+	if node.isEnd && (isPunctuation(ch) || isSpace(ch) || isMultiLineComment(ch, s.lookAhead(1)) ||
+		s.atExecCommentClose(ch) || isEOF(ch)) {
 		s.cursor = pos + 1 // Include the last matched character
 		s.isTableIndicator = node.isTableIndicator
 		return s.emit(node.tokenType)
@@ -611,7 +612,7 @@ func (s *Lexer) skipExecutableCommentDelimiters(ch rune) rune {
 		// Closing delimiter of a body we are lexing. Reached only outside
 		// strings and comments, so a */ inside a quoted literal does not end
 		// the body -- which is what MySQL does too.
-		if s.inExecComment && ch == '*' && s.lookAhead(1) == '/' {
+		if s.atExecCommentClose(ch) {
 			s.nextBy(2)
 			s.inExecComment = false
 			ch = s.peek()
@@ -624,6 +625,16 @@ func (s *Lexer) skipExecutableCommentDelimiters(ch rune) rune {
 		}
 		return ch
 	}
+}
+
+// atExecCommentClose reports whether the cursor sits on the `*/` that ends the
+// executable comment body currently being lexed.
+//
+// It is a token boundary like a space is: `/*!50000or*/` executes as the
+// operator, so `or` has to reach the keyword trie as a complete word rather
+// than decay to an IDENT because the rune after it is a `*`.
+func (s *Lexer) atExecCommentClose(ch rune) bool {
+	return s.inExecComment && ch == '*' && s.lookAhead(1) == '/'
 }
 
 // consumeExecutableCommentOpening consumes the opening `/*!` of a MySQL
