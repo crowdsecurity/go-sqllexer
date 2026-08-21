@@ -66,6 +66,11 @@ func (t *Token) getLastValueToken() *LastValueToken {
 
 type LexerConfig struct {
 	DBMS DBMSType `json:"dbms,omitempty"`
+
+	// ExecutableComments makes the lexer scan the body of a MySQL executable
+	// comment (/*! ... */ and /*!NNNNN ... */) as SQL rather than emitting the
+	// whole construct as a single MULTILINE_COMMENT token.
+	ExecutableComments bool `json:"executable_comments,omitempty"`
 }
 
 type lexerOption func(*LexerConfig)
@@ -74,6 +79,24 @@ func WithDBMS(dbms DBMSType) lexerOption {
 	dbms = getDBMSFromAlias(dbms)
 	return func(c *LexerConfig) {
 		c.DBMS = dbms
+	}
+}
+
+// WithExecutableComments controls how MySQL executable comments are tokenized.
+//
+// MySQL executes the body of /*! ... */ and /*!NNNNN ... */ when the server
+// version is at least NNNNN, so `id=1/*!50000union select pw from users*/`
+// runs the union on any MySQL >= 5.0. Lexing the construct as one comment
+// token hides that statement from anything reading the token stream.
+//
+// With this enabled the opening delimiter and its version digits are consumed
+// and the body is lexed as ordinary SQL, so the stream matches what the server
+// executes. The default is disabled: query normalization wants a MySQL
+// optimizer hint to stay a comment, and changing that would alter obfuscated
+// output for existing callers.
+func WithExecutableComments(enabled bool) lexerOption {
+	return func(c *LexerConfig) {
+		c.ExecutableComments = enabled
 	}
 }
 
@@ -88,6 +111,8 @@ type Lexer struct {
 	hasDigits          bool // true if the token has digits
 	isTableIndicator   bool // true if the token is a table indicator
 	isSimpleIdentifier bool // true if current quoted ident started with a letter and only used alphanumerics afterwards
+	execComments       bool // mirrors config.ExecutableComments, read once per token
+	inExecComment      bool // true while scanning the body of a MySQL executable comment
 }
 
 func New(input string, opts ...lexerOption) *Lexer {
@@ -99,12 +124,16 @@ func New(input string, opts ...lexerOption) *Lexer {
 	for _, opt := range opts {
 		opt(lexer.config)
 	}
+	lexer.execComments = lexer.config.ExecutableComments
 	return lexer
 }
 
 // Scan scans the next token and returns it.
 func (s *Lexer) Scan() *Token {
 	ch := s.peek()
+	if s.execComments {
+		ch = s.skipExecutableCommentDelimiters(ch)
+	}
 	switch {
 	case isSpace(ch):
 		return s.scanWhitespace()
@@ -570,6 +599,52 @@ func (s *Lexer) scanMultiLineComment() *Token {
 		ch = s.next()
 	}
 	return s.emit(MULTILINE_COMMENT)
+}
+
+// skipExecutableCommentDelimiters consumes any run of MySQL executable comment
+// delimiters at the cursor and returns the rune Scan should dispatch on. The
+// delimiters emit no token of their own, so scanning has to carry on past them
+// to reach one; looping rather than recursing keeps a run of empty comments
+// (/*!*//*!*/...) from growing the stack once per delimiter.
+func (s *Lexer) skipExecutableCommentDelimiters(ch rune) rune {
+	for {
+		// Closing delimiter of a body we are lexing. Reached only outside
+		// strings and comments, so a */ inside a quoted literal does not end
+		// the body -- which is what MySQL does too.
+		if s.inExecComment && ch == '*' && s.lookAhead(1) == '/' {
+			s.nextBy(2)
+			s.inExecComment = false
+			ch = s.peek()
+			continue
+		}
+		if isMultiLineComment(ch, s.lookAhead(1)) && s.lookAhead(2) == '!' {
+			s.consumeExecutableCommentOpening()
+			ch = s.peek()
+			continue
+		}
+		return ch
+	}
+}
+
+// consumeExecutableCommentOpening consumes the opening `/*!` of a MySQL
+// executable comment plus the version gate when one is present, leaving the
+// cursor on the body so it is lexed as ordinary SQL until Scan reaches the
+// closing `*/`.
+//
+// A version gate is exactly five digits (50000 is 5.0.0). Anything shorter is
+// not a gate, so those digits stay part of the body and lex as a number.
+func (s *Lexer) consumeExecutableCommentOpening() {
+	s.nextBy(3) // consume the opening slash, asterisk and bang
+
+	digits := 0
+	for digits < 5 && isDigit(s.lookAhead(digits)) {
+		digits++
+	}
+	if digits == 5 {
+		s.nextBy(5)
+	}
+
+	s.inExecComment = true
 }
 
 func (s *Lexer) scanPunctuation() *Token {

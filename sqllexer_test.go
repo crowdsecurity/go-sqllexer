@@ -2,6 +2,7 @@ package sqllexer
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -1148,6 +1149,99 @@ here */`,
 				{IDENT, "my_table"},
 			},
 		},
+		{
+			name:  "mysql executable comment stays one comment token by default",
+			input: "1/*!50000union select pw from users*/",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{MULTILINE_COMMENT, "/*!50000union select pw from users*/"},
+			},
+		},
+		{
+			name:      "mysql executable comment body is lexed when enabled",
+			input:     "1/*!50000union select pw from users*/",
+			lexerOpts: []lexerOption{WithExecutableComments(true)},
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{KEYWORD, "union"},
+				{SPACE, " "},
+				{COMMAND, "select"},
+				{SPACE, " "},
+				{IDENT, "pw"},
+				{SPACE, " "},
+				{KEYWORD, "from"},
+				{SPACE, " "},
+				{IDENT, "users"},
+			},
+		},
+		{
+			name:      "mysql executable comment without a version gate",
+			input:     "1/*!union select 1*/",
+			lexerOpts: []lexerOption{WithExecutableComments(true)},
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{KEYWORD, "union"},
+				{SPACE, " "},
+				{COMMAND, "select"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:      "a version gate is exactly five digits, shorter runs stay in the body",
+			input:     "1/*!500or 1=1*/",
+			lexerOpts: []lexerOption{WithExecutableComments(true)},
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{NUMBER, "500"},
+				{KEYWORD, "or"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+				{OPERATOR, "="},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:      "plain multiline comments are untouched when enabled",
+			input:     "SELECT /* plain */ 1",
+			lexerOpts: []lexerOption{WithExecutableComments(true)},
+			expected: []TokenSpec{
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{MULTILINE_COMMENT, "/* plain */"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:      "a closing delimiter inside a string does not end the body",
+			input:     "1/*!50000select '*/' */",
+			lexerOpts: []lexerOption{WithExecutableComments(true)},
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{COMMAND, "select"},
+				{SPACE, " "},
+				{STRING, "'*/'"},
+				{SPACE, " "},
+			},
+		},
+		{
+			name:      "an empty executable comment yields no tokens",
+			input:     "/*!*/",
+			lexerOpts: []lexerOption{WithExecutableComments(true)},
+			expected:  []TokenSpec{},
+		},
+		{
+			name:      "an unterminated executable comment ends at EOF",
+			input:     "1/*!50000union select",
+			lexerOpts: []lexerOption{WithExecutableComments(true)},
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{KEYWORD, "union"},
+				{SPACE, " "},
+				{COMMAND, "select"},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1506,5 +1600,25 @@ func ExampleLexer() {
 			break
 		}
 		fmt.Println(token)
+	}
+}
+
+// Executable comment delimiters emit no token, so Scan has to keep scanning to
+// find one. It does that in a loop; this pins that, since recursing once per
+// delimiter would grow the stack in proportion to the input.
+func TestExecutableCommentsDoNotGrowTheStack(t *testing.T) {
+	input := strings.Repeat("/*!*/", 200000) + "1"
+
+	lexer := New(input, WithExecutableComments(true))
+	got := 0
+	for {
+		if tok := lexer.Scan(); tok.Type == EOF {
+			break
+		}
+		got++
+	}
+
+	if got != 1 {
+		t.Errorf("got %d tokens, want 1", got)
 	}
 }

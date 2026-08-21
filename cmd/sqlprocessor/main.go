@@ -15,6 +15,23 @@ import (
 	"github.com/DataDog/go-sqllexer"
 )
 
+// execComments mirrors -executable-comments. It is read-only after flag
+// parsing, so the tokenizers can reach it without threading a parameter
+// through every call site.
+//
+// It defaults off because the encodings this tool emits are what downstream
+// models were trained on, and turning it on changes them: a payload that used
+// to encode as NUMBER MULTILINE_COMMENT now yields the tokens MySQL actually
+// executes. Enable it and retrain together.
+var execComments bool
+
+func newLexer(input string) *sqllexer.Lexer {
+	if execComments {
+		return sqllexer.New(input, sqllexer.WithExecutableComments(true))
+	}
+	return sqllexer.New(input)
+}
+
 type tokenOut struct {
 	Type  string `json:"type"`
 	Value string `json:"value"`
@@ -44,6 +61,8 @@ func main() {
 	outDir := flag.String("outdir", "", "Output directory (default: same as input file)")
 	includeEmpty := flag.Bool("include-empty", false, "Include empty/whitespace-only lines")
 	mode := flag.String("mode", "analyze", "Processing mode: analyze, tokenize or encode")
+	flag.BoolVar(&execComments, "executable-comments", false,
+		"Lex the body of MySQL executable comments (/*! ... */) as SQL instead of emitting one comment token")
 	flag.Parse()
 
 	inputs := make([]string, 0, 1+len(flag.Args()))
@@ -307,7 +326,7 @@ func encodeValue(mode, line string, lineNum int) any {
 }
 
 func tokenizeLineTypesOnly(line string) string {
-	lexer := sqllexer.New(line)
+	lexer := newLexer(line)
 	var types []string
 	for {
 		tok := lexer.Scan()
@@ -362,7 +381,7 @@ func appendSegmentTypes(dst []string, segment string) []string {
 	if segment == "" {
 		return dst
 	}
-	lexer := sqllexer.New(segment)
+	lexer := newLexer(segment)
 	for {
 		tok := lexer.Scan()
 		if tok == nil || tok.Type == sqllexer.EOF {
@@ -373,7 +392,7 @@ func appendSegmentTypes(dst []string, segment string) []string {
 }
 
 func tokenizeLine(line string, lineNum int) record {
-	lexer := sqllexer.New(line)
+	lexer := newLexer(line)
 
 	tokens := make([]tokenOut, 0, 32)
 	hasError := false

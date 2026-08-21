@@ -90,3 +90,37 @@ func TestReadLineStripQuotesFlag(t *testing.T) {
 		}
 	}
 }
+
+// A MySQL executable comment runs on the server but encodes as a single
+// comment token, so `1/*!50000union select pw from users*/` reaches a model as
+// two tokens with the union hidden inside one of them. -executable-comments
+// unfolds the body; it is off by default so the shipped encodings do not move.
+func TestExecutableCommentsFlag(t *testing.T) {
+	const in = "1/*!50000union select pw from users*/"
+
+	if got, want := tokenizeLineTypesOnly(in), "NUMBER MULTILINE_COMMENT"; got != want {
+		t.Errorf("default\n   got:  %s\n   want: %s", got, want)
+	}
+
+	execComments = true
+	defer func() { execComments = false }()
+
+	want := "NUMBER KEYWORD SPACE COMMAND SPACE IDENT SPACE KEYWORD SPACE IDENT"
+	if got := tokenizeLineTypesOnly(in); got != want {
+		t.Errorf("-executable-comments\n   got:  %s\n   want: %s", got, want)
+	}
+
+	// The marked encoding picks the option up too.
+	if got := tokenizeLineTypesOnlyMarked(in); got != want {
+		t.Errorf("marked -executable-comments\n   got:  %s\n   want: %s", got, want)
+	}
+
+	// A quote ends the segment and the lexer scanning it, so an executable
+	// comment opened before a quote does not stay open across it: the tail is
+	// lexed on its own and the closing */ falls out as WILDCARD OPERATOR.
+	// Quote positions are the point of this encoding, so they win.
+	wantSplit := "NUMBER KEYWORD SPACE COMMAND SPACE QUOTE IDENT WILDCARD OPERATOR"
+	if got := tokenizeLineTypesOnlyMarked("1/*!50000union select 'pw*/"); got != wantSplit {
+		t.Errorf("marked across a quote\n   got:  %s\n   want: %s", got, wantSplit)
+	}
+}
