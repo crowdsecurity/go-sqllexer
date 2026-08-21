@@ -4,10 +4,11 @@ permissions:
  
 on:
   push:
-    branches: 
+    branches:
     - "*"
   pull_request:
     types: [opened, reopened, synchronize]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.ref }}
@@ -16,16 +17,18 @@ concurrency:
 jobs:
   benchmark:
     if: github.ref != 'refs/heads/main'
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-8core-linux
+    # Upstream runs this on DataDog's self-hosted ARM pool, which does not
+    # exist in this fork -- jobs targeting it queue forever. GitHub-hosted
+    # runners are shared and noisy, so treat a benchstat delta here as a hint
+    # and confirm anything that matters on a quiet machine.
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         go-version: [ '1.25.7' ]
 
     steps:
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
         with:
           go-version: ${{ matrix.go-version }}
       - name: Display Go version
@@ -86,15 +89,17 @@ jobs:
 
   benchmark_main:
     if: github.ref == 'refs/heads/main'
-    runs-on:
-      group: ARM LINUX SHARED
-      labels: arm-8core-linux
+    # Upstream runs this on DataDog's self-hosted ARM pool, which does not
+    # exist in this fork -- jobs targeting it queue forever. GitHub-hosted
+    # runners are shared and noisy, so treat a benchstat delta here as a hint
+    # and confirm anything that matters on a quiet machine.
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         go-version: [ '1.25.7' ]
     steps:
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b
+        uses: actions/setup-go@0aaccfd150d50ccaeb58ebd88d36e91967a5f35b # v5.4.0
         with:
           go-version: ${{ matrix.go-version }}
       - name: Display Go version

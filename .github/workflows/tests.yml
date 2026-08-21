@@ -6,31 +6,73 @@ on:
   pull_request:
     types: [opened, reopened, synchronize]
 
-jobs:
-  build:
+# Nothing here writes to the repository. Declared explicitly because the
+# default for a workflow without this block is whatever the repository
+# setting says, which is not necessarily read-only.
+permissions:
+  contents: read
 
+# Supersede an in-flight run when the same ref is pushed again. Keyed by
+# workflow as well as ref so it does not fight the other workflows.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
+      # Report every Go version that fails, not just the first.
+      fail-fast: false
       matrix:
-        go-version: [ '1.25', '1.25.7' ]
+        go-version: ['1.25', '1.25.7']
 
     steps:
-      - uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # v3.6.0
+      # Actions are pinned to a commit SHA rather than a tag: a tag can be
+      # moved to point at different code, a SHA cannot. The trailing comment
+      # is the tag that SHA carried when it was pinned, so the next person
+      # can tell what they are bumping from.
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The build never pushes, so leave no credentials in .git/config
+          # for a later step to pick up.
+          persist-credentials: false
+
       - name: Setup Go ${{ matrix.go-version }}
-        uses: actions/setup-go@7b8cf10d4e4a01d4992d18a89f4d7dc5a3e6d6f4 # v4.3.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go-version }}
+
       - name: Display Go version
         run: go version
-      - name: Install dependencies
-        run: go get .
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
       - name: Build
         run: go build -v ./...
+
       - name: Test
         run: go test -v ./...
-      - name: Test Race
+
+      - name: Test with race detector
         run: go test -race -v ./...
-      - name: Fuzz Normalizer
-        run: go test -fuzz=FuzzNormalizer -fuzztime 60s
-      - name: Fuzz Obfuscator and Normalizer
-        run: go test -fuzz=FuzzObfuscatorAndNormalizer -fuzztime 60s
+
+      # -run '^$' selects no unit tests, so the fuzz budget is spent fuzzing
+      # rather than re-running the suite that already ran above.
+      - name: Fuzz normalizer
+        run: go test -run '^$' -fuzz=FuzzNormalizer -fuzztime 60s
+
+      - name: Fuzz obfuscator and normalizer
+        run: go test -run '^$' -fuzz=FuzzObfuscatorAndNormalizer -fuzztime 60s
