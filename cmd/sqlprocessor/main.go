@@ -19,17 +19,16 @@ import (
 // parsing, so the tokenizers can reach it without threading a parameter
 // through every call site.
 //
-// It defaults off because the encodings this tool emits are what downstream
-// models were trained on, and turning it on changes them: a payload that used
-// to encode as NUMBER MULTILINE_COMMENT now yields the tokens MySQL actually
-// executes. Enable it and retrain together.
+// It follows the lexer's default, which is on: `1/*!50000union select ...*/`
+// encodes as the tokens MySQL executes rather than as NUMBER
+// MULTILINE_COMMENT. That is a change to what this tool emits, so a model
+// fitted to the old encoding has to be refitted to consume the new one.
+//
+// Pass -executable-comments=false to reproduce the old encoding.
 var execComments bool
 
 func newLexer(input string) *sqllexer.Lexer {
-	if execComments {
-		return sqllexer.New(input, sqllexer.WithExecutableComments(true))
-	}
-	return sqllexer.New(input)
+	return sqllexer.New(input, sqllexer.WithExecutableComments(execComments))
 }
 
 type tokenOut struct {
@@ -61,8 +60,8 @@ func main() {
 	outDir := flag.String("outdir", "", "Output directory (default: same as input file)")
 	includeEmpty := flag.Bool("include-empty", false, "Include empty/whitespace-only lines")
 	mode := flag.String("mode", "analyze", "Processing mode: analyze, tokenize or encode")
-	flag.BoolVar(&execComments, "executable-comments", false,
-		"Lex the body of MySQL executable comments (/*! ... */) as SQL instead of emitting one comment token")
+	flag.BoolVar(&execComments, "executable-comments", true,
+		"Lex the body of MySQL executable comments (/*! ... */) as SQL. Set =false to emit one comment token instead")
 	flag.Parse()
 
 	inputs := make([]string, 0, 1+len(flag.Args()))

@@ -246,9 +246,12 @@ func TestObfuscator(t *testing.T) {
 			replaceDigits: true,
 		},
 		{
+			// SQL Server does not execute /*! ... */, so there it stays a
+			// comment. Declared, because that is what decides it.
 			input:         `SELECT * FROM dbo.Items WHERE id = 1 or /*!obfuscation*/ 1 = 1`,
 			expected:      `SELECT * FROM dbo.Items WHERE id = ? or /*!obfuscation*/ ? = ?`,
 			replaceDigits: true,
+			dbms:          DBMSSQLServer,
 		},
 		{
 			input:         `SELECT * FROM Items WHERE id = -1 OR id = +01 OR id = -108 OR id = -.018 OR id = -.08 OR id = -908129 OR id = 1e2 OR id = 1e-1`,

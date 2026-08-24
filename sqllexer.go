@@ -67,10 +67,13 @@ func (t *Token) getLastValueToken() *LastValueToken {
 type LexerConfig struct {
 	DBMS DBMSType `json:"dbms,omitempty"`
 
-	// ExecutableComments makes the lexer scan the body of a MySQL executable
-	// comment (/*! ... */ and /*!NNNNN ... */) as SQL rather than emitting the
-	// whole construct as a single MULTILINE_COMMENT token.
-	ExecutableComments bool `json:"executable_comments,omitempty"`
+	// ExecutableComments scans the body of a MySQL executable comment
+	// (/*! ... */ and /*!NNNNN ... */) as SQL rather than emitting the whole
+	// construct as one MULTILINE_COMMENT token.
+	//
+	// Defaults to true; New sets it before applying options. Not omitempty,
+	// because a false here is a deliberate choice and should serialize.
+	ExecutableComments bool `json:"executable_comments"`
 }
 
 type lexerOption func(*LexerConfig)
@@ -84,16 +87,21 @@ func WithDBMS(dbms DBMSType) lexerOption {
 
 // WithExecutableComments controls how MySQL executable comments are tokenized.
 //
-// MySQL executes the body of /*! ... */ and /*!NNNNN ... */ when the server
-// version is at least NNNNN, so `id=1/*!50000union select pw from users*/`
-// runs the union on any MySQL >= 5.0. Lexing the construct as one comment
-// token hides that statement from anything reading the token stream.
+// MySQL executes the body of /*! ... */ and /*!NNNNN ... */ when the server is
+// at least version NNNNN, so `id=1/*!50000union select pw from users*/` runs
+// the union on any MySQL >= 5.0. Lexing that as one comment token hides the
+// statement from anything reading the token stream, and leaves two tokens where
+// a whole union used to be.
 //
-// With this enabled the opening delimiter and its version digits are consumed
-// and the body is lexed as ordinary SQL, so the stream matches what the server
-// executes. The default is disabled: query normalization wants a MySQL
-// optimizer hint to stay a comment, and changing that would alter obfuscated
-// output for existing callers.
+// On by default, and dialect-aware: a caller that declares PostgreSQL, SQL
+// Server, Oracle or Snowflake gets a plain comment, because those engines do
+// not execute the construct. A caller that declares MySQL, or declares nothing,
+// gets the body lexed as SQL -- the reading that matches what a MySQL server
+// would do, which is the one anything reading untrusted input has to assume.
+//
+// Pass false to get a single MULTILINE_COMMENT token whatever the dialect.
+// Query normalization may want that, so an optimizer hint stays a comment in
+// obfuscated output.
 func WithExecutableComments(enabled bool) lexerOption {
 	return func(c *LexerConfig) {
 		c.ExecutableComments = enabled
@@ -118,13 +126,13 @@ type Lexer struct {
 func New(input string, opts ...lexerOption) *Lexer {
 	lexer := &Lexer{
 		src:    input,
-		config: &LexerConfig{},
+		config: &LexerConfig{ExecutableComments: true},
 		token:  &Token{},
 	}
 	for _, opt := range opts {
 		opt(lexer.config)
 	}
-	lexer.execComments = lexer.config.ExecutableComments
+	lexer.execComments = lexer.config.ExecutableComments && executesComments(lexer.config.DBMS)
 	return lexer
 }
 
@@ -638,6 +646,20 @@ func (s *Lexer) skipExecutableCommentDelimiters(ch rune) rune {
 			continue
 		}
 		return ch
+	}
+}
+
+// executesComments reports whether a dialect runs the body of /*! ... */.
+//
+// MySQL does, and so does anything that has not said what it is: a consumer
+// that cannot name its backend -- a WAF in front of an unknown one -- has to
+// read the construct the way the engine that executes it would.
+func executesComments(dbms DBMSType) bool {
+	switch dbms {
+	case DBMSPostgres, DBMSSQLServer, DBMSOracle, DBMSSnowflake:
+		return false
+	default:
+		return true
 	}
 }
 
