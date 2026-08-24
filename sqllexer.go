@@ -66,6 +66,14 @@ func (t *Token) getLastValueToken() *LastValueToken {
 
 type LexerConfig struct {
 	DBMS DBMSType `json:"dbms,omitempty"`
+
+	// ExecutableComments scans the body of a MySQL executable comment
+	// (/*! ... */ and /*!NNNNN ... */) as SQL rather than emitting the whole
+	// construct as one MULTILINE_COMMENT token.
+	//
+	// Defaults to true; New sets it before applying options. Not omitempty,
+	// because a false here is a deliberate choice and should serialize.
+	ExecutableComments bool `json:"executable_comments"`
 }
 
 type lexerOption func(*LexerConfig)
@@ -74,6 +82,29 @@ func WithDBMS(dbms DBMSType) lexerOption {
 	dbms = getDBMSFromAlias(dbms)
 	return func(c *LexerConfig) {
 		c.DBMS = dbms
+	}
+}
+
+// WithExecutableComments controls how MySQL executable comments are tokenized.
+//
+// MySQL executes the body of /*! ... */ and /*!NNNNN ... */ when the server is
+// at least version NNNNN, so `id=1/*!50000union select pw from users*/` runs
+// the union on any MySQL >= 5.0. Lexing that as one comment token hides the
+// statement from anything reading the token stream, and leaves two tokens where
+// a whole union used to be.
+//
+// On by default, and dialect-aware: a caller that declares PostgreSQL, SQL
+// Server, Oracle or Snowflake gets a plain comment, because those engines do
+// not execute the construct. A caller that declares MySQL, or declares nothing,
+// gets the body lexed as SQL -- the reading that matches what a MySQL server
+// would do, which is the one anything reading untrusted input has to assume.
+//
+// Pass false to get a single MULTILINE_COMMENT token whatever the dialect.
+// Query normalization may want that, so an optimizer hint stays a comment in
+// obfuscated output.
+func WithExecutableComments(enabled bool) lexerOption {
+	return func(c *LexerConfig) {
+		c.ExecutableComments = enabled
 	}
 }
 
@@ -88,23 +119,29 @@ type Lexer struct {
 	hasDigits          bool // true if the token has digits
 	isTableIndicator   bool // true if the token is a table indicator
 	isSimpleIdentifier bool // true if current quoted ident started with a letter and only used alphanumerics afterwards
+	execComments       bool // mirrors config.ExecutableComments, read once per token
+	inExecComment      bool // true while scanning the body of a MySQL executable comment
 }
 
 func New(input string, opts ...lexerOption) *Lexer {
 	lexer := &Lexer{
 		src:    input,
-		config: &LexerConfig{},
+		config: &LexerConfig{ExecutableComments: true},
 		token:  &Token{},
 	}
 	for _, opt := range opts {
 		opt(lexer.config)
 	}
+	lexer.execComments = lexer.config.ExecutableComments && executesComments(lexer.config.DBMS)
 	return lexer
 }
 
 // Scan scans the next token and returns it.
 func (s *Lexer) Scan() *Token {
 	ch := s.peek()
+	if s.execComments {
+		ch = s.skipExecutableCommentDelimiters(ch)
+	}
 	switch {
 	case isSpace(ch):
 		return s.scanWhitespace()
@@ -154,13 +191,27 @@ func (s *Lexer) Scan() *Token {
 		}
 		return s.scanUnknown() // backtick is only valid in mysql
 	case ch == '#':
+		// SQL Server names temporary tables #temp, so there a # opens an
+		// identifier. It is the only dialect that does, and saying so is the
+		// caller's job.
 		if s.config.DBMS == DBMSSQLServer {
 			return s.scanIdentifier(ch)
-		} else if s.config.DBMS == DBMSMySQL {
-			// MySQL treats # as a comment
-			return s.scanSingleLineComment(ch)
 		}
-		return s.scanOperator(ch)
+		// PostgreSQL spells three JSON path operators #> #>> #-, but only
+		// PostgreSQL does, so recognising them requires being told. Guessing
+		// from the two characters alone is what a bypass is made of: MySQL
+		// reads `admin'#-` as a comment to end of line and logs you in.
+		if s.config.DBMS == DBMSPostgres && (s.lookAhead(1) == '>' || s.lookAhead(1) == '-') {
+			return s.scanOperator(ch)
+		}
+		// Everything else: a comment to end of line. MySQL says so outright,
+		// and a caller that has not named its dialect gets the same reading,
+		// because the alternative is worse for the one that cannot afford to
+		// guess. A WAF scanning untrusted input has no idea what is behind it;
+		// scanning `admin'#` as an identifier and an operator hides a login
+		// bypass that MySQL would execute, while scanning a stray # in some
+		// other dialect as a comment costs a token.
+		return s.scanSingleLineComment(ch)
 	case ch == '@':
 		if s.lookAhead(1) == '@' {
 			if isAlphaNumeric(s.lookAhead(2)) {
@@ -399,7 +450,8 @@ func (s *Lexer) scanIdentifier(ch rune) *Token {
 	}
 
 	// If we found a complete keyword and next char is whitespace
-	if node.isEnd && (isPunctuation(ch) || isSpace(ch) || isMultiLineComment(ch, s.lookAhead(1)) || isEOF(ch)) {
+	if node.isEnd && (isPunctuation(ch) || isSpace(ch) || isMultiLineComment(ch, s.lookAhead(1)) ||
+		s.atExecCommentClose(ch) || isEOF(ch)) {
 		s.cursor = pos + 1 // Include the last matched character
 		s.isTableIndicator = node.isTableIndicator
 		return s.emit(node.tokenType)
@@ -570,6 +622,76 @@ func (s *Lexer) scanMultiLineComment() *Token {
 		ch = s.next()
 	}
 	return s.emit(MULTILINE_COMMENT)
+}
+
+// skipExecutableCommentDelimiters consumes any run of MySQL executable comment
+// delimiters at the cursor and returns the rune Scan should dispatch on. The
+// delimiters emit no token of their own, so scanning has to carry on past them
+// to reach one; looping rather than recursing keeps a run of empty comments
+// (/*!*//*!*/...) from growing the stack once per delimiter.
+func (s *Lexer) skipExecutableCommentDelimiters(ch rune) rune {
+	for {
+		// Closing delimiter of a body we are lexing. Reached only outside
+		// strings and comments, so a */ inside a quoted literal does not end
+		// the body -- which is what MySQL does too.
+		if s.atExecCommentClose(ch) {
+			s.nextBy(2)
+			s.inExecComment = false
+			ch = s.peek()
+			continue
+		}
+		if isMultiLineComment(ch, s.lookAhead(1)) && s.lookAhead(2) == '!' {
+			s.consumeExecutableCommentOpening()
+			ch = s.peek()
+			continue
+		}
+		return ch
+	}
+}
+
+// executesComments reports whether a dialect runs the body of /*! ... */.
+//
+// MySQL does, and so does anything that has not said what it is: a consumer
+// that cannot name its backend -- a WAF in front of an unknown one -- has to
+// read the construct the way the engine that executes it would.
+func executesComments(dbms DBMSType) bool {
+	switch dbms {
+	case DBMSPostgres, DBMSSQLServer, DBMSOracle, DBMSSnowflake:
+		return false
+	default:
+		return true
+	}
+}
+
+// atExecCommentClose reports whether the cursor sits on the `*/` that ends the
+// executable comment body currently being lexed.
+//
+// It is a token boundary like a space is: `/*!50000or*/` executes as the
+// operator, so `or` has to reach the keyword trie as a complete word rather
+// than decay to an IDENT because the rune after it is a `*`.
+func (s *Lexer) atExecCommentClose(ch rune) bool {
+	return s.inExecComment && ch == '*' && s.lookAhead(1) == '/'
+}
+
+// consumeExecutableCommentOpening consumes the opening `/*!` of a MySQL
+// executable comment plus the version gate when one is present, leaving the
+// cursor on the body so it is lexed as ordinary SQL until Scan reaches the
+// closing `*/`.
+//
+// A version gate is exactly five digits (50000 is 5.0.0). Anything shorter is
+// not a gate, so those digits stay part of the body and lex as a number.
+func (s *Lexer) consumeExecutableCommentOpening() {
+	s.nextBy(3) // consume the opening slash, asterisk and bang
+
+	digits := 0
+	for digits < 5 && isDigit(s.lookAhead(digits)) {
+		digits++
+	}
+	if digits == 5 {
+		s.nextBy(5)
+	}
+
+	s.inExecComment = true
 }
 
 func (s *Lexer) scanPunctuation() *Token {

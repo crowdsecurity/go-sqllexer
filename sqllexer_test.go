@@ -2,6 +2,7 @@ package sqllexer
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 )
 
@@ -893,6 +894,7 @@ here */`,
 				{SPACE, " "},
 				{IDENT, "users"},
 			},
+			lexerOpts: []lexerOption{WithDBMS(DBMSPostgres)},
 		},
 		{
 			name:  "extracts JSON sub-object at the specified path as text",
@@ -912,6 +914,7 @@ here */`,
 				{SPACE, " "},
 				{IDENT, "users"},
 			},
+			lexerOpts: []lexerOption{WithDBMS(DBMSPostgres)},
 		},
 		{
 			name:  "JSON path return any item for the specified JSON value",
@@ -1146,6 +1149,181 @@ here */`,
 				{KEYWORD, "analyze"},
 				{SPACE, " "},
 				{IDENT, "my_table"},
+			},
+		},
+		{
+			name:  "WAITFOR DELAY is a keyword pair, not two identifiers",
+			input: "1 WAITFOR DELAY '0:0:5'",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{KEYWORD, "WAITFOR"},
+				{SPACE, " "},
+				{KEYWORD, "DELAY"},
+				{SPACE, " "},
+				{STRING, "'0:0:5'"},
+			},
+		},
+		{
+			name:  "# opens a comment without being told the dialect",
+			input: "1 or 1=1#",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{KEYWORD, "or"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+				{OPERATOR, "="},
+				{NUMBER, "1"},
+				{COMMENT, "#"},
+			},
+		},
+		{
+			// #> is a JSON path operator only in PostgreSQL. Undeclared, the
+			// MySQL reading wins: everything after the # is commented out.
+			// Guessing from the two characters would leave `admin'#-` scanning
+			// as an operator while MySQL executes it as a login bypass.
+			name:  "an undeclared #> is a comment, not a JSON operator",
+			input: "data #> '{a}'",
+			expected: []TokenSpec{
+				{IDENT, "data"},
+				{SPACE, " "},
+				{COMMENT, "#> '{a}'"},
+			},
+		},
+		{
+			name:      "a declared PostgreSQL #- stays a JSON operator",
+			input:     "data #- '{a}'",
+			lexerOpts: []lexerOption{WithDBMS(DBMSPostgres)},
+			expected: []TokenSpec{
+				{IDENT, "data"},
+				{SPACE, " "},
+				{JSON_OP, "#-"},
+				{SPACE, " "},
+				{STRING, "'{a}'"},
+			},
+		},
+		{
+			name:      "an executable comment stays one token when switched off",
+			input:     "1/*!50000union select pw from users*/",
+			lexerOpts: []lexerOption{WithExecutableComments(false)},
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{MULTILINE_COMMENT, "/*!50000union select pw from users*/"},
+			},
+		},
+		{
+			// SQL Server does not execute the construct, so declaring it is
+			// enough to get a comment back without switching anything off.
+			name:      "a dialect that does not execute it gets a comment",
+			input:     "1/*!50000union select pw from users*/",
+			lexerOpts: []lexerOption{WithDBMS(DBMSSQLServer)},
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{MULTILINE_COMMENT, "/*!50000union select pw from users*/"},
+			},
+		},
+		{
+			name:  "an executable comment body is lexed by default",
+			input: "1/*!50000union select pw from users*/",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{KEYWORD, "union"},
+				{SPACE, " "},
+				{COMMAND, "select"},
+				{SPACE, " "},
+				{IDENT, "pw"},
+				{SPACE, " "},
+				{KEYWORD, "from"},
+				{SPACE, " "},
+				{IDENT, "users"},
+			},
+		},
+		{
+			name:  "mysql executable comment without a version gate",
+			input: "1/*!union select 1*/",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{KEYWORD, "union"},
+				{SPACE, " "},
+				{COMMAND, "select"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "a version gate is exactly five digits, shorter runs stay in the body",
+			input: "1/*!500or 1=1*/",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{NUMBER, "500"},
+				{KEYWORD, "or"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+				{OPERATOR, "="},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "plain multiline comments are untouched when enabled",
+			input: "SELECT /* plain */ 1",
+			expected: []TokenSpec{
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{MULTILINE_COMMENT, "/* plain */"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "a closing delimiter inside a string does not end the body",
+			input: "1/*!50000select '*/' */",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{COMMAND, "select"},
+				{SPACE, " "},
+				{STRING, "'*/'"},
+				{SPACE, " "},
+			},
+		},
+		{
+			name:     "an empty executable comment yields no tokens",
+			input:    "/*!*/",
+			expected: []TokenSpec{},
+		},
+		{
+			name:  "a keyword against the closing delimiter is still a keyword",
+			input: "1 /*!50000or*/ sleep(1)",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{KEYWORD, "or"},
+				{SPACE, " "},
+				{FUNCTION, "sleep"},
+				{PUNCTUATION, "("},
+				{NUMBER, "1"},
+				{PUNCTUATION, ")"},
+			},
+		},
+		{
+			name:  "a command against the closing delimiter is still a command",
+			input: "1/*!50000union*/select 1",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{KEYWORD, "union"},
+				{COMMAND, "select"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "an unterminated executable comment ends at EOF",
+			input: "1/*!50000union select",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{KEYWORD, "union"},
+				{SPACE, " "},
+				{COMMAND, "select"},
 			},
 		},
 	}
@@ -1506,5 +1684,25 @@ func ExampleLexer() {
 			break
 		}
 		fmt.Println(token)
+	}
+}
+
+// Executable comment delimiters emit no token, so Scan has to keep scanning to
+// find one. It does that in a loop; this pins that, since recursing once per
+// delimiter would grow the stack in proportion to the input.
+func TestExecutableCommentsDoNotGrowTheStack(t *testing.T) {
+	input := strings.Repeat("/*!*/", 200000) + "1"
+
+	lexer := New(input, WithExecutableComments(true))
+	got := 0
+	for {
+		if tok := lexer.Scan(); tok.Type == EOF {
+			break
+		}
+		got++
+	}
+
+	if got != 1 {
+		t.Errorf("got %d tokens, want 1", got)
 	}
 }

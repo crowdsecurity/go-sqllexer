@@ -154,6 +154,12 @@ var keywords = []string{
 	"SKIP",
 	"IF",
 	"ONLY",
+
+	// T-SQL statement delay. WAITFOR DELAY '00:00:05' is the SQL Server
+	// equivalent of SLEEP(5), and the oracle a blind injection reads one bit
+	// at a time; without these both words scan as ordinary identifiers.
+	"WAITFOR",
+	"DELAY",
 }
 
 var (
