@@ -1706,3 +1706,215 @@ func TestExecutableCommentsDoNotGrowTheStack(t *testing.T) {
 		t.Errorf("got %d tokens, want 1", got)
 	}
 }
+
+// A NUL used to be indistinguishable from the past-the-end sentinel, so every
+// scan loop stopped at the first one and the rest of the input was dropped with
+// no token and no error. It is an UNKNOWN rune like any other control byte.
+func TestLexerNulByte(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []TokenSpec
+	}{
+		{
+			name:  "a NUL in the middle of a statement",
+			input: "1 UNION\x00SELECT 1",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{IDENT, "UNION"},
+				{UNKNOWN, "\x00"},
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "a NUL before anything else",
+			input: "\x001 UNION SELECT 1",
+			expected: []TokenSpec{
+				{UNKNOWN, "\x00"},
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{KEYWORD, "UNION"},
+				{SPACE, " "},
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "a NUL after everything else",
+			input: "1 UNION SELECT 1\x00",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{KEYWORD, "UNION"},
+				{SPACE, " "},
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+				{UNKNOWN, "\x00"},
+			},
+		},
+		{
+			name:  "a NUL on its own",
+			input: "\x00",
+			expected: []TokenSpec{
+				{UNKNOWN, "\x00"},
+			},
+		},
+		{
+			name:  "several NULs",
+			input: "1\x00UNION\x00SELECT\x001",
+			expected: []TokenSpec{
+				{NUMBER, "1"},
+				{UNKNOWN, "\x00"},
+				{IDENT, "UNION"},
+				{UNKNOWN, "\x00"},
+				{IDENT, "SELECT"},
+				{UNKNOWN, "\x00"},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "a NUL inside a string literal",
+			input: "SELECT 'ab\x00cd' FROM users",
+			expected: []TokenSpec{
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{STRING, "'ab\x00cd'"},
+				{SPACE, " "},
+				{KEYWORD, "FROM"},
+				{SPACE, " "},
+				{IDENT, "users"},
+			},
+		},
+		{
+			name:  "a NUL inside a quoted identifier",
+			input: "SELECT \"ab\x00cd\" FROM users",
+			expected: []TokenSpec{
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{QUOTED_IDENT, "\"ab\x00cd\""},
+				{SPACE, " "},
+				{KEYWORD, "FROM"},
+				{SPACE, " "},
+				{IDENT, "users"},
+			},
+		},
+		{
+			name:  "a NUL inside a line comment",
+			input: "SELECT 1 -- ab\x00cd\nFROM users",
+			expected: []TokenSpec{
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+				{SPACE, " "},
+				{COMMENT, "-- ab\x00cd"},
+				{SPACE, "\n"},
+				{KEYWORD, "FROM"},
+				{SPACE, " "},
+				{IDENT, "users"},
+			},
+		},
+		{
+			name:  "a NUL inside a block comment",
+			input: "SELECT /* ab\x00cd */ 1",
+			expected: []TokenSpec{
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{MULTILINE_COMMENT, "/* ab\x00cd */"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+			},
+		},
+		{
+			name:  "a NUL does not hide the payload behind it",
+			input: "x\x00 UNION SELECT 1,2,3 FROM users",
+			expected: []TokenSpec{
+				{IDENT, "x"},
+				{UNKNOWN, "\x00"},
+				{SPACE, " "},
+				{KEYWORD, "UNION"},
+				{SPACE, " "},
+				{COMMAND, "SELECT"},
+				{SPACE, " "},
+				{NUMBER, "1"},
+				{PUNCTUATION, ","},
+				{NUMBER, "2"},
+				{PUNCTUATION, ","},
+				{NUMBER, "3"},
+				{SPACE, " "},
+				{KEYWORD, "FROM"},
+				{SPACE, " "},
+				{IDENT, "users"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := scanAll(tt.input)
+			if len(got) != len(tt.expected) {
+				t.Fatalf("got %d tokens, want %d: %v", len(got), len(tt.expected), got)
+			}
+			for i, want := range tt.expected {
+				if got[i].Type != want.Type {
+					t.Errorf("token[%d] got type %v, want %v", i, got[i].Type, want.Type)
+				}
+				if got[i].Value != want.Value {
+					t.Errorf("token[%d] got value %q, want %q", i, got[i].Value, want.Value)
+				}
+			}
+		})
+	}
+}
+
+// \x01, \x1f and \x7f scan as UNKNOWN and scanning carries on. A NUL is not a
+// terminator, so the same input with a NUL may differ only in that byte.
+func TestNulScansLikeAnyOtherControlByte(t *testing.T) {
+	inputs := []string{
+		"1 UNION\x00SELECT 1",
+		"\x001 UNION SELECT 1",
+		"1 UNION SELECT 1\x00",
+		"\x00",
+		"1\x00UNION\x00SELECT\x001",
+		"SELECT 'ab\x00cd' FROM users",
+		"SELECT \"ab\x00cd\" FROM users",
+		"SELECT 1 -- ab\x00cd\nFROM users",
+		"SELECT /* ab\x00cd */ 1",
+	}
+
+	for _, ctrl := range []string{"\x01", "\x1f", "\x7f"} {
+		for _, input := range inputs {
+			t.Run(fmt.Sprintf("%q with %q", input, ctrl), func(t *testing.T) {
+				got := scanAll(input)
+				want := scanAll(strings.ReplaceAll(input, "\x00", ctrl))
+				if len(got) != len(want) {
+					t.Fatalf("got %d tokens, want %d: %v vs %v", len(got), len(want), got, want)
+				}
+				for i := range want {
+					if got[i].Type != want[i].Type {
+						t.Errorf("token[%d] got type %v, want %v", i, got[i].Type, want[i].Type)
+					}
+					if v := strings.ReplaceAll(got[i].Value, "\x00", ctrl); v != want[i].Value {
+						t.Errorf("token[%d] got value %q, want %q", i, v, want[i].Value)
+					}
+				}
+			})
+		}
+	}
+}
+
+func scanAll(input string) []TokenSpec {
+	lexer := New(input)
+	var tokens []TokenSpec
+	for {
+		tok := lexer.Scan()
+		if tok.Type == EOF {
+			return tokens
+		}
+		tokens = append(tokens, TokenSpec{tok.Type, tok.Value})
+	}
+}

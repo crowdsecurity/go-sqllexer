@@ -251,7 +251,7 @@ func (s *Lexer) Scan() *Token {
 func (s *Lexer) lookAhead(n int) rune {
 	pos := s.cursor + n
 	if pos >= len(s.src) || pos < 0 {
-		return 0
+		return eofRune
 	}
 	// Fast path for ASCII
 	b := s.src[pos]
@@ -272,11 +272,11 @@ func (s *Lexer) peek() rune {
 func (s *Lexer) nextBy(n int) rune {
 	// advance the cursor by n and return the rune at the cursor position
 	if s.cursor+n > len(s.src) {
-		return 0
+		return eofRune
 	}
 	s.cursor += n
 	if s.cursor >= len(s.src) {
-		return 0
+		return eofRune
 	}
 	// Fast path for ASCII
 	b := s.src[s.cursor]

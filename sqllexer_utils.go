@@ -447,9 +447,15 @@ func isPunctuation(ch rune) bool {
 		ch == '[' || ch == ']' || ch == '{' || ch == '}'
 }
 
+// eofRune is the past-the-end sentinel lookAhead and nextBy return. It has to
+// be a value the input cannot produce: a Go string may hold a literal NUL, and
+// utf8.DecodeRuneInString answers malformed bytes with RuneError, so neither 0
+// nor RuneError is available. Decoding never yields a negative rune.
+const eofRune rune = -1
+
 // isEOF checks if a rune is EOF (end of file)
 func isEOF(ch rune) bool {
-	return ch == 0
+	return ch == eofRune
 }
 
 // isIdentifier checks if a rune is an identifier
